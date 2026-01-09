@@ -9,6 +9,7 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
+use percent_encoding::percent_decode_str;
 use reqwest::header;
 use tokio_util::bytes::Bytes;
 use uuid::Uuid;
@@ -100,7 +101,13 @@ impl FilesRouter {
                         file = Some(data);
                         filename = Some(field_filename);
                     }
-                    "path" => path = Some(String::from_utf8(data.to_vec()).unwrap()),
+                    "path" => {
+                        let raw_path = String::from_utf8(data.to_vec()).unwrap();
+                        let decoded = percent_decode_str(&raw_path)
+                            .decode_utf8()
+                            .unwrap_or(std::borrow::Cow::Borrowed(&raw_path));
+                        path = Some(decoded.to_string());
+                    }
                     // don't give a fuck about other fields
                     _ => (),
                 }
@@ -143,7 +150,13 @@ impl FilesRouter {
                 .get("path")
                 .map(|path| String::from_utf8(path.to_vec()).map_err(|_| "Path cannot be parsed"))
                 .unwrap_or(Err("Path is required"))
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_owned()))?;
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_owned()))
+                .map(|raw_path| {
+                    percent_decode_str(&raw_path)
+                        .decode_utf8()
+                        .unwrap_or(std::borrow::Cow::Borrowed(&raw_path))
+                        .to_string()
+                })?;
 
             let file = body_parts
                 .get("file")

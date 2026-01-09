@@ -24,6 +24,8 @@ const Storages = () => {
 
 	onMount(async () => {
 		const storagesSchema = await API.storages.listStorages()
+		console.log('[STORAGES] Received from API:', storagesSchema)
+		console.log('[STORAGES] Number of storages:', storagesSchema.storages?.length || 0)
 		setStorages(storagesSchema.storages)
 	})
 

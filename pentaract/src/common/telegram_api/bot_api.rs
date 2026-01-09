@@ -2,7 +2,8 @@ use reqwest::multipart;
 use uuid::Uuid;
 
 use crate::{
-    common::types::ChatId, errors::PentaractResult,
+    common::types::ChatId,
+    errors::{PentaractError, PentaractResult},
     services::storage_workers_scheduler::StorageWorkersScheduler,
 };
 
@@ -27,15 +28,19 @@ impl<'t> TelegramBotApi<'t> {
         chat_id: ChatId,
         storage_id: Uuid,
     ) -> PentaractResult<UploadSchema> {
-        let chat_id = {
-            // inserting 100 between minus sign and chat id
-            // cause telegram devs are complete retards and it works this way only
-            //
-            // https://stackoverflow.com/a/65965402/12255756
+        tracing::debug!(
+            "[TELEGRAM API] Uploading chunk: chat_id={}, file_size={}",
+            chat_id,
+            file.len()
+        );
 
-            let n = chat_id.abs().checked_ilog10().unwrap_or(0) + 1;
-            chat_id - (100 * ChatId::from(10).pow(n))
-        };
+        if chat_id < 0 && chat_id > -10000000000 {
+            tracing::info!(
+                "[TELEGRAM API] Using regular group (chat_id={}). If bot can't find the chat, \
+                make sure the bot is added and has permissions.",
+                chat_id
+            );
+        }
 
         let token = self.scheduler.get_token(storage_id).await?;
         let url = self.build_url("", "sendDocument", token);
@@ -51,10 +56,27 @@ impl<'t> TelegramBotApi<'t> {
             .send()
             .await?;
 
-        match response.error_for_status() {
-            // https://stackoverflow.com/a/32679930/12255756
-            Ok(r) => Ok(r.json::<UploadBodySchema>().await?.result.document),
-            Err(e) => Err(e.into()),
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+            tracing::error!(
+                "[TELEGRAM API] Upload failed: status={}, response={}",
+                status,
+                error_text
+            );
+            return Err(PentaractError::TelegramAPIError(format!(
+                "Status {}: {}",
+                status,
+                error_text
+            )));
+        }
+
+        match response.json::<UploadBodySchema>().await {
+            Ok(body) => Ok(body.result.document),
+            Err(e) => {
+                tracing::error!("[TELEGRAM API] Failed to parse response: {}", e);
+                Err(e.into())
+            }
         }
     }
 

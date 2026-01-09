@@ -48,10 +48,12 @@ const StorageCreateForm = () => {
 		let err = null
 
 		if (value > 0) {
-			err = 'Chat id must be a valid negative integer'
+			err = 'Chat id must be a negative integer'
 		} else if (value === '') {
-			err = 'Chat id is required and must be a valid negative integer'
+			err = 'Chat id is required'
 		}
+		// No additional validation - accept any negative number
+		// Both regular groups (-XXXXXXXXX) and supergroups (-100XXXXXXXXXX) are valid
 
 		setChatIdErr(err)
 	}
@@ -108,7 +110,10 @@ const StorageCreateForm = () => {
 					type="number"
 					variant="standard"
 					onChange={validateChatId}
-					helperText={chatIdErr}
+					helperText={
+						chatIdErr() ||
+						'Get chat ID via @userinfobot or @getidsbot. Use the ID exactly as provided.'
+					}
 					error={typeof chatIdErr() === 'string'}
 					fullWidth
 					required

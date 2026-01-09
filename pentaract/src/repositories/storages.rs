@@ -46,14 +46,19 @@ impl<'d> StoragesRepository<'d> {
     }
 
     pub async fn list_by_user_id(&self, user_id: Uuid) -> PentaractResult<Vec<StorageWithInfo>> {
-        sqlx::query_as(
+        tracing::debug!(
+            "[STORAGES REPO] Fetching storages for user_id={}",
+            user_id
+        );
+        
+        let result = sqlx::query_as(
             format!(
                 "
                 SELECT s.*, COUNT(f.id) AS files_amount, COALESCE(SUM(f.size), 0)::BigInt as size 
                 FROM {TABLE} s
                 JOIN {ACCESS_TABLE} a ON s.id = a.storage_id
-                LEFT JOIN {FILES_TABLE} f ON s.id = f.storage_id
-                WHERE a.user_id = $1 AND (f.path NOT LIKE '%/' OR f.path IS NULL)
+                LEFT JOIN {FILES_TABLE} f ON s.id = f.storage_id AND f.path NOT LIKE '%/'
+                WHERE a.user_id = $1
                 GROUP by s.id
             "
             )
@@ -62,7 +67,15 @@ impl<'d> StoragesRepository<'d> {
         .bind(user_id)
         .fetch_all(self.db)
         .await
-        .map_err(|e| map_not_found(e, "storages"))
+        .map_err(|e| map_not_found(e, "storages"))?;
+        
+        tracing::debug!(
+            "[STORAGES REPO] Found {} storages for user_id={}",
+            result.len(),
+            user_id
+        );
+        
+        Ok(result)
     }
 
     pub async fn get_by_id(&self, id: Uuid) -> PentaractResult<Storage> {
