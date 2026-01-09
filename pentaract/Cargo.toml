@@ -3,23 +3,19 @@ name = "pentaract"
 version = "0.1.0"
 edition = "2021"
 
-[profile.release]
-strip = true
-codegen-units = 1
-
 [dependencies]
 # routing
-axum = { version = "0.6.20", features = ["headers", "tracing", "multipart"]}
+axum = { version = "0.6.20", features = ["headers", "tracing", "multipart"] }
 mime_guess = "2.0.4"
-tower = { version = "0.4.13", features = ["limit"], default-features = false}
-tower-http = { version = "0.4.4", features = ["fs", "trace", "cors"], default_features = false }
+tower = { version = "0.4.13", features = ["limit"], default-features = false }
+tower-http = { version = "0.4.4", features = ["fs", "trace", "cors"], default-features = false }
 
 # serialization/deserialization
 serde = { version = "1.0.189", features = ["derive"] }
 
 # auth
 pwhash = "1.0.0"
-jsonwebtoken = { version = "9", default-features = false }
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
 
 # async
 tokio = { version = "1.33.0", features = ["full"] }
@@ -28,10 +24,13 @@ futures = "0.3.29"
 
 # logging
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter"]} 
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 
 # others
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid"] }
 thiserror = "1.0.50"
 uuid = { version = "1.5.0", features = ["serde", "v4"] }
-reqwest = { version = "0.11.22", features = ["multipart", "json"] }
+
+# HTTP client (без native-tls — ок для musl)
+reqwest = { version = "0.11.22", default-features = false, features = ["multipart", "json", "rustls-tls"] }
+percent-encoding = "2.3"

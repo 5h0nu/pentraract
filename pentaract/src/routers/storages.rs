@@ -66,6 +66,10 @@ impl StoragesRouter {
             .list(&user)
             .await
             .map(|s| StoragesListSchema::new(s))?;
+        tracing::debug!(
+            "[STORAGES ROUTER] Returning {} storages to client",
+            storages.storages.len()
+        );
         Ok::<_, (StatusCode, String)>(Json(storages))
     }
 

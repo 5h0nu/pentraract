@@ -24,6 +24,13 @@ impl<'d> AccessRepository<'d> {
     ) -> PentaractResult<()> {
         let id = Uuid::new_v4();
 
+        tracing::debug!(
+            "[ACCESS REPO] Attempting to grant access: storage_id={}, user_email={}, access_type={:?}",
+            storage_id,
+            grant_access.user_email,
+            grant_access.access_type
+        );
+
         let result = sqlx::query(
             format!(
                 "
@@ -54,12 +61,27 @@ impl<'d> AccessRepository<'d> {
             }
         })?;
 
+        tracing::debug!(
+            "[ACCESS REPO] Query affected {} rows",
+            result.rows_affected()
+        );
+
         if result.rows_affected() == 0 {
+            tracing::error!(
+                "[ACCESS REPO] User with email \"{}\" not found in users table",
+                grant_access.user_email
+            );
             return Err(PentaractError::DoesNotExist(format!(
                 "user with email \"{}\"",
                 grant_access.user_email
             )));
         }
+
+        tracing::debug!(
+            "[ACCESS REPO] Successfully granted access to user {} for storage {}",
+            grant_access.user_email,
+            storage_id
+        );
 
         Ok(())
     }
