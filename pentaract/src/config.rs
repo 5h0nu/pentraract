@@ -19,6 +19,15 @@ pub struct Config {
 
     pub telegram_api_base_url: String,
     pub telegram_rate_limit: u8,
+
+    /// Where to spool uploads and other temporary data.
+    pub work_dir: String,
+
+    /// Max size of a single Telegram document chunk.
+    ///
+    /// - Official Bot API has a practical 20MB download limitation via `getFile`.
+    /// - Local Bot API can handle up to ~2GB per upload, so chunk size can be much larger.
+    pub telegram_chunk_size_mb: u32,
 }
 
 impl Config {
@@ -40,8 +49,25 @@ impl Config {
         let access_token_expire_in_secs = Self::get_env_var("ACCESS_TOKEN_EXPIRE_IN_SECS")?;
         let refresh_token_expire_in_days = Self::get_env_var("REFRESH_TOKEN_EXPIRE_IN_DAYS")?;
         let secret_key = Self::get_env_var("SECRET_KEY")?;
-        let telegram_api_base_url = Self::get_env_var("TELEGRAM_API_BASE_URL")?;
+        let telegram_local_api: bool =
+            Self::get_env_var_with_default("TELEGRAM_LOCAL_API", false)?;
+        let telegram_api_base_url: String = if telegram_local_api {
+            Self::get_env_var_with_default("TELEGRAM_API_BASE_URL", "http://127.0.0.1:8081".to_owned())?
+        } else {
+            Self::get_env_var_with_default("TELEGRAM_API_BASE_URL", "https://api.telegram.org".to_owned())?
+        };
         let telegram_rate_limit = Self::get_env_var_with_default("TELEGRAM_RATE_LIMIT", 18)?;
+
+        let work_dir = Self::get_env_var_with_default("WORK_DIR", "work".to_owned())?;
+
+        let default_chunk_mb = if telegram_api_base_url.contains("api.telegram.org") {
+            20
+        } else {
+            // stay under the 2GB limit with some headroom
+            1950
+        };
+        let telegram_chunk_size_mb =
+            Self::get_env_var_with_default("TELEGRAM_CHUNK_SIZE_MB", default_chunk_mb)?;
 
         Ok(Self {
             db_uri,
@@ -57,6 +83,8 @@ impl Config {
             secret_key,
             telegram_api_base_url,
             telegram_rate_limit,
+            work_dir,
+            telegram_chunk_size_mb,
         })
     }
 

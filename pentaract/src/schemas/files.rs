@@ -1,8 +1,8 @@
-use axum::body::Bytes;
-use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{common::types::Position, models::files::File};
+use crate::common::types::Position;
 
 #[derive(Deserialize)]
 pub struct UploadParams {
@@ -14,17 +14,16 @@ pub struct InFileSchema {
     pub storage_id: Uuid,
     pub path: String,
     pub size: i64,
-    pub file: Bytes,
+    pub file_path: PathBuf,
 }
 
 impl InFileSchema {
-    pub fn new(storage_id: Uuid, path: String, file: Bytes) -> Self {
-        let size = file.len() as i64;
+    pub fn new(storage_id: Uuid, path: String, file_path: PathBuf, size: i64) -> Self {
         Self {
             storage_id,
             path,
             size,
-            file,
+            file_path,
         }
     }
 }

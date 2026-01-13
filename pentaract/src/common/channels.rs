@@ -1,4 +1,5 @@
 use tokio::sync::{mpsc, oneshot};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::errors::PentaractResult;
@@ -20,7 +21,8 @@ pub enum ClientData {
 pub struct UploadFileData {
     pub file_id: Uuid,
     pub user_id: Uuid,
-    pub file_data: Box<[u8]>,
+    pub file_path: PathBuf,
+    pub file_size: i64,
 }
 
 pub struct DownloadFileData {

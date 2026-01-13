@@ -1,7 +1,7 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{io, path::Path, pin::Pin, sync::Arc};
 
 use axum::{
-    body::Full,
+    body::{Bytes, StreamBody},
     extract::{DefaultBodyLimit, Multipart, Path as RoutePath, Query, State},
     http::StatusCode,
     middleware,
@@ -9,22 +9,27 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
+use async_stream::try_stream;
+use futures::{Stream, StreamExt};
 use percent_encoding::percent_decode_str;
 use reqwest::header;
-use tokio_util::bytes::Bytes;
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::{
     common::{
+        access::check_access,
         jwt_manager::AuthUser,
         routing::{app_state::AppState, middlewares::auth::logged_in_required},
+        telegram_api::bot_api::TelegramBotApi,
     },
     errors::{PentaractError, PentaractResult},
+    models::access::AccessType,
     models::files::InFile,
-    schemas::files::{
-        InFileSchema, InFolderSchema, SearchQuery, UploadParams, IN_FILE_SCHEMA_FIELDS_AMOUNT,
-    },
+    repositories::{access::AccessRepository, files::FilesRepository},
+    schemas::files::{InFileSchema, InFolderSchema, SearchQuery, UploadParams},
     services::files::FilesService,
+    services::storage_workers_scheduler::StorageWorkersScheduler,
 };
 
 pub struct FilesRouter;
@@ -86,45 +91,74 @@ impl FilesRouter {
         RoutePath(storage_id): RoutePath<Uuid>,
         mut multipart: Multipart,
     ) -> Result<StatusCode, (StatusCode, String)> {
-        // parsing
-        let (file, path) = {
-            let (mut file, mut filename, mut path) = (None, None, None);
+        // stream multipart to disk
+        let upload_dir = Path::new(&state.config.work_dir).join("uploads");
+        tokio::fs::create_dir_all(&upload_dir)
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Can't create upload dir".to_owned()))?;
 
-            // parsing
-            while let Some(field) = multipart.next_field().await.unwrap() {
-                let name = field.name().unwrap().to_owned();
-                let field_filename = field.file_name().unwrap_or("unnamed").to_owned();
-                let data = field.bytes().await.unwrap();
+        let tmp_path = upload_dir.join(format!("{}.upload", Uuid::new_v4()));
+        let mut tmp_file = tokio::fs::File::create(&tmp_path)
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Can't create temp file".to_owned()))?;
 
-                match name.as_str() {
-                    "file" => {
-                        file = Some(data);
-                        filename = Some(field_filename);
+        let (mut filename, mut parent_path, mut file_size) = (None::<String>, None::<String>, 0i64);
+
+        while let Some(mut field) = multipart
+            .next_field()
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid multipart".to_owned()))?
+        {
+            let name = field.name().unwrap_or("").to_owned();
+
+            match name.as_str() {
+                "file" => {
+                    filename = Some(field.file_name().unwrap_or("unnamed").to_owned());
+                    while let Some(chunk) = field
+                        .chunk()
+                        .await
+                        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid file stream".to_owned()))?
+                    {
+                        file_size += chunk.len() as i64;
+                        tmp_file
+                            .write_all(&chunk)
+                            .await
+                            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Can't write temp file".to_owned()))?;
                     }
-                    "path" => {
-                        let raw_path = String::from_utf8(data.to_vec()).unwrap();
-                        let decoded = percent_decode_str(&raw_path)
-                            .decode_utf8()
-                            .unwrap_or(std::borrow::Cow::Borrowed(&raw_path));
-                        path = Some(decoded.to_string());
-                    }
-                    // don't give a fuck about other fields
-                    _ => (),
                 }
+                "path" => {
+                    let raw_path = field
+                        .text()
+                        .await
+                        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid path".to_owned()))?;
+                    let decoded = percent_decode_str(&raw_path)
+                        .decode_utf8()
+                        .unwrap_or(std::borrow::Cow::Borrowed(&raw_path));
+                    parent_path = Some(decoded.to_string());
+                }
+                _ => (),
             }
+        }
 
-            let file = file.ok_or((StatusCode::BAD_REQUEST, "file file is required".to_owned()))?;
-            let path = path
-                .ok_or((StatusCode::BAD_REQUEST, "path file is required".to_owned()))
-                .map(|path| Self::construct_path(&path, &filename.unwrap()))??;
-            (file, path)
-        };
-        let size = file.len() as i64;
-        let in_file = InFile::new(path, size, storage_id);
+        tmp_file
+            .flush()
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Can't flush temp file".to_owned()))?;
 
-        FilesService::new(&state.db, state.tx.clone())
-            .upload_anyway(in_file, file, &user)
-            .await?;
+        let parent_path = parent_path.ok_or((StatusCode::BAD_REQUEST, "path field is required".to_owned()))?;
+        let filename = filename.ok_or((StatusCode::BAD_REQUEST, "file field is required".to_owned()))?;
+        let path = Self::construct_path(&parent_path, &filename)?;
+
+        let in_file = InFile::new(path, file_size, storage_id);
+
+        let result = FilesService::new(&state.db, state.tx.clone())
+            .upload_anyway_from_path(in_file, tmp_path.clone(), file_size, &user)
+            .await;
+
+        if let Err(e) = result {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(<(StatusCode, String)>::from(e));
+        }
         Ok(StatusCode::CREATED)
     }
 
@@ -134,41 +168,68 @@ impl FilesRouter {
         RoutePath(storage_id): RoutePath<Uuid>,
         mut multipart: Multipart,
     ) -> Result<StatusCode, (StatusCode, String)> {
-        // parsing and validating schema
-        let in_schema = {
-            let mut body_parts = HashMap::with_capacity(IN_FILE_SCHEMA_FIELDS_AMOUNT);
+        let upload_dir = Path::new(&state.config.work_dir).join("uploads");
+        tokio::fs::create_dir_all(&upload_dir)
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Can't create upload dir".to_owned()))?;
 
-            // parsing
-            while let Some(field) = multipart.next_field().await.unwrap() {
-                let name = field.name().unwrap().to_string();
-                let data = field.bytes().await.unwrap();
-                body_parts.insert(name, data);
-            }
+        let tmp_path = upload_dir.join(format!("{}.upload", Uuid::new_v4()));
+        let mut tmp_file = tokio::fs::File::create(&tmp_path)
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Can't create temp file".to_owned()))?;
 
-            // validating
-            let path = body_parts
-                .get("path")
-                .map(|path| String::from_utf8(path.to_vec()).map_err(|_| "Path cannot be parsed"))
-                .unwrap_or(Err("Path is required"))
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_owned()))
-                .map(|raw_path| {
-                    percent_decode_str(&raw_path)
+        let (mut path, mut file_size) = (None::<String>, 0i64);
+
+        while let Some(mut field) = multipart
+            .next_field()
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid multipart".to_owned()))?
+        {
+            let name = field.name().unwrap_or("").to_owned();
+            match name.as_str() {
+                "path" => {
+                    let raw_path = field
+                        .text()
+                        .await
+                        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid path".to_owned()))?;
+                    let decoded = percent_decode_str(&raw_path)
                         .decode_utf8()
-                        .unwrap_or(std::borrow::Cow::Borrowed(&raw_path))
-                        .to_string()
-                })?;
+                        .unwrap_or(std::borrow::Cow::Borrowed(&raw_path));
+                    path = Some(decoded.to_string());
+                }
+                "file" => {
+                    while let Some(chunk) = field
+                        .chunk()
+                        .await
+                        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid file stream".to_owned()))?
+                    {
+                        file_size += chunk.len() as i64;
+                        tmp_file
+                            .write_all(&chunk)
+                            .await
+                            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Can't write temp file".to_owned()))?;
+                    }
+                }
+                _ => (),
+            }
+        }
 
-            let file = body_parts
-                .get("file")
-                .ok_or((StatusCode::BAD_REQUEST, "File is required".to_owned()))?;
+        tmp_file
+            .flush()
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Can't flush temp file".to_owned()))?;
 
-            InFileSchema::new(storage_id, path, file.clone())
-        };
+        let path = path.ok_or((StatusCode::BAD_REQUEST, "Path is required".to_owned()))?;
+        let in_schema = InFileSchema::new(storage_id, path, tmp_path.clone(), file_size);
 
-        // do all other stuff
-        FilesService::new(&state.db, state.tx.clone())
+        let result = FilesService::new(&state.db, state.tx.clone())
             .upload_to(in_schema, &user)
-            .await?;
+            .await;
+
+        if let Err(e) = result {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(<(StatusCode, String)>::from(e));
+        }
 
         Ok(StatusCode::CREATED)
     }
@@ -202,31 +263,77 @@ impl FilesRouter {
         storage_id: Uuid,
         path: &str,
     ) -> Result<Response, (StatusCode, String)> {
-        FilesService::new(&state.db, state.tx.clone())
-            .download(path, storage_id, &user)
+        // 0) checking access
+        check_access(
+            &AccessRepository::new(&state.db),
+            user.id,
+            storage_id,
+            &AccessType::R,
+        )
+        .await
+        .map_err(|e| <(StatusCode, String)>::from(e))?;
+
+        // 1) validation
+        if path.starts_with('/') || path.contains("//") {
+            return Err((StatusCode::BAD_REQUEST, PentaractError::InvalidPath.to_string()));
+        }
+
+        // 2) locate file + chunks
+        let files_repo = FilesRepository::new(&state.db);
+        let file = files_repo
+            .get_file_by_path(path, storage_id)
             .await
-            .map(|data| {
-                let filename = Path::new(&path)
-                    .file_name()
-                    .map(|name| name.to_str().unwrap_or_default())
-                    .unwrap_or("unnamed.bin");
-                let content_type = mime_guess::from_path(filename)
-                    .first_or_octet_stream()
-                    .to_string();
-                let bytes = Bytes::from(data);
-                let body = Full::new(bytes);
+            .map_err(|e| <(StatusCode, String)>::from(e))?;
 
-                let headers = AppendHeaders([
-                    (header::CONTENT_TYPE, content_type),
-                    (
-                        header::CONTENT_DISPOSITION,
-                        format!("attachment; filename=\"{filename}\""),
-                    ),
-                ]);
+        let mut chunks = files_repo
+            .list_chunks_of_file(file.id)
+            .await
+            .map_err(|e| <(StatusCode, String)>::from(e))?;
+        chunks.sort_by_key(|c| c.position);
 
-                (headers, body).into_response()
-            })
-            .map_err(|e| <(StatusCode, String)>::from(e))
+        let base_url = state.config.telegram_api_base_url.clone();
+        let rate = state.config.telegram_rate_limit;
+        let db = state.db.clone();
+
+        // 3) stream each telegram chunk sequentially to the client
+        let stream = try_stream! {
+            for chunk in chunks {
+                let scheduler = StorageWorkersScheduler::new(&db, rate);
+                let api = TelegramBotApi::new(&base_url, scheduler);
+
+                let mut s = api
+                    .download_stream(&chunk.telegram_file_id, storage_id)
+                    .await
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+                while let Some(item) = s.next().await {
+                    let bytes = item
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    yield bytes;
+                }
+            }
+        };
+
+        let stream: Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>> = Box::pin(stream);
+        let body = StreamBody::new(stream);
+
+        let filename = Path::new(&path)
+            .file_name()
+            .map(|name| name.to_str().unwrap_or_default())
+            .unwrap_or("unnamed.bin");
+        let content_type = mime_guess::from_path(filename)
+            .first_or_octet_stream()
+            .to_string();
+
+        let headers = AppendHeaders([
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ]);
+
+        Ok((headers, body).into_response())
     }
 
     ///

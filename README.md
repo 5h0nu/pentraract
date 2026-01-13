@@ -260,6 +260,21 @@ Currently Telegram API limits file download to 20 MB, hence we can't upload file
 
 Pentaract divides uploaded files into chunks and save them to Telegram separately and on downloading a file it fetches all the file chunks from the Telegram API and combine them into one in the order it was divided in. That grants ability to upload and download files with almost unlimited size (it's like you've ever downloaded a file with size >10 GB).
 
+#### Using Local Telegram Bot API (recommended for large files)
+
+If you run Telegram's **Local Bot API server** (aka `telegram-bot-api` with `--local`), Telegram allows much larger uploads (up to ~2GB per document).
+
+This repo now supports running it automatically via `docker-compose.yml`.
+
+Set these variables in `.env`:
+
+- `TELEGRAM_LOCAL_API=true`
+- `TELEGRAM_API_BASE_URL=http://telegram-bot-api:8081`
+- `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` (your Telegram app credentials)
+- `TELEGRAM_CHUNK_SIZE_MB=1950` (safe default under the 2GB limit)
+
+With Local Bot API enabled, Pentaract will chunk and stream uploads/downloads so big files do not require loading everything into RAM.
+
 ## Current in storage features
 
 - [x] Upload file

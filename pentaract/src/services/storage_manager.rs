@@ -26,10 +26,9 @@ pub struct StorageManagerService<'d> {
 }
 
 impl<'d> StorageManagerService<'d> {
-    pub fn new(db: &'d PgPool, telegram_baseurl: &'d str, rate_limit: u8) -> Self {
+    pub fn new(db: &'d PgPool, telegram_baseurl: &'d str, rate_limit: u8, chunk_size: usize) -> Self {
         let files_repo = FilesRepository::new(db);
         let storages_repo = StoragesRepository::new(db);
-        let chunk_size = 20 * 1024 * 1024;
         Self {
             storages_repo,
             files_repo,
@@ -44,30 +43,63 @@ impl<'d> StorageManagerService<'d> {
         // 1. getting storage
         let storage = self.storages_repo.get_by_file_id(data.file_id).await?;
 
-        // 2. dividing file into chunks
-        let bytes_chunks = data.file_data.chunks(self.chunk_size);
+        let mut position: usize = 0;
+        let mut chunks: Vec<FileChunk> = Vec::new();
 
-        // 3. uploading by chunks
-        let futures_: Vec<_> = bytes_chunks
-            .enumerate()
-            .map(|(position, bytes_chunk)| {
-                self.upload_chunk(
+        let mut offset: u64 = 0;
+        let total: u64 = data.file_size.max(0) as u64;
+
+        while offset < total {
+            let len = std::cmp::min(self.chunk_size as u64, total - offset);
+            let chunk = self
+                .upload_chunk_from_file(
                     storage.id,
                     storage.chat_id,
                     data.file_id,
                     position,
-                    bytes_chunk,
+                    &data.file_path,
+                    offset,
+                    len,
                 )
-            })
-            .collect();
+                .await?;
+            chunks.push(chunk);
+            offset += len;
+            position += 1;
+        }
 
-        let chunks = join_all(futures_)
-            .await
-            .into_iter()
-            .collect::<PentaractResult<Vec<_>>>()?;
+        let result = self.files_repo.create_chunks_batch(chunks).await;
+        let _ = tokio::fs::remove_file(&data.file_path).await;
+        result
+    }
 
-        // 4. saving chunks to db
-        self.files_repo.create_chunks_batch(chunks).await
+    async fn upload_chunk_from_file(
+        &self,
+        storage_id: Uuid,
+        chat_id: ChatId,
+        file_id: Uuid,
+        position: usize,
+        file_path: &std::path::Path,
+        offset: u64,
+        len: u64,
+    ) -> PentaractResult<FileChunk> {
+        let scheduler = StorageWorkersScheduler::new(self.db, self.rate_limit);
+
+        let document = TelegramBotApi::new(self.telegram_baseurl, scheduler)
+            .upload_file_part(file_path, offset, len, chat_id, storage_id)
+            .await?;
+
+        tracing::debug!(
+            "[TELEGRAM API] uploaded chunk with file_id \"{}\" and position \"{}\"",
+            document.file_id,
+            position
+        );
+
+        Ok(FileChunk::new(
+            Uuid::new_v4(),
+            file_id,
+            document.file_id,
+            position as i16,
+        ))
     }
 
     async fn upload_chunk(
