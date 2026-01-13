@@ -44,6 +44,13 @@ impl<'d> StoragesService<'d> {
         // creating storage
         let in_model = InStorage::new(in_schema.name, in_schema.chat_id);
         let storage = self.repo.create(in_model).await?;
+        
+        tracing::debug!(
+            "[STORAGES SERVICE] Created storage id={}, name={}, chat_id={}",
+            storage.id,
+            storage.name,
+            storage.chat_id
+        );
 
         // setting user as the storage admin
         let access_schema = GrantAccess::new(user.email.clone(), AccessType::A);
@@ -51,15 +58,37 @@ impl<'d> StoragesService<'d> {
             .access_repo
             .create_or_update(storage.id, access_schema)
             .await;
-        if result.is_err() {
-            // fallback
-            self.repo.delete_storage(storage.id).await?
+        
+        match &result {
+            Ok(_) => {
+                tracing::debug!(
+                    "[STORAGES SERVICE] Successfully granted access to user {} for storage {}",
+                    user.email,
+                    storage.id
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[STORAGES SERVICE] Failed to grant access to user {} for storage {}: {:?}. Rolling back storage creation.",
+                    user.email,
+                    storage.id,
+                    e
+                );
+                // fallback
+                let _ = self.repo.delete_storage(storage.id).await;
+            }
         }
         result.map(|_| storage)
     }
 
     pub async fn list(&self, user: &AuthUser) -> PentaractResult<Vec<StorageWithInfo>> {
-        self.repo.list_by_user_id(user.id).await
+        let storages = self.repo.list_by_user_id(user.id).await?;
+        tracing::debug!(
+            "[STORAGES SERVICE] Listed {} storages for user_id={}",
+            storages.len(),
+            user.id
+        );
+        Ok(storages)
     }
 
     pub async fn get(&self, id: Uuid, user: &AuthUser) -> PentaractResult<Storage> {

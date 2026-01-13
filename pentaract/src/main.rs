@@ -30,6 +30,11 @@ mod storage_manager;
 async fn main() {
     let config = Config::new().unwrap();
 
+    // Make sure filesystem work dir exists early.
+    tokio::fs::create_dir_all(&config.work_dir)
+        .await
+        .expect("failed to create WORK_DIR");
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {

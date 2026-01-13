@@ -10,7 +10,11 @@ RUN cargo install cargo-chef
 WORKDIR /app
 
 FROM chef AS planner
-COPY ./pentaract .
+WORKDIR /app
+COPY pentaract/Cargo.toml .
+COPY pentaract/Cargo.lock .
+COPY pentaract/src ./src
+
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder 
