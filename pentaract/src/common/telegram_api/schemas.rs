@@ -23,4 +23,5 @@ pub struct DownloadBodySchema {
 #[derive(Deserialize)]
 pub struct DownloadSchema {
     pub file_path: String,
+    pub file_size: Option<u64>,
 }
