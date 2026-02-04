@@ -20,7 +20,7 @@ const apiRequest = async (
 	method,
 	auth_token,
 	body,
-	return_response = false
+	return_response = false,
 ) => {
 	const { addAlert } = alertStore
 
@@ -62,38 +62,53 @@ const apiRequest = async (
  * @param {string} path
  * @param {string | null | undefined} auth_token
  * @param {FormData} form
+ * @param {(progress: number) => void} [onProgress]
  * @returns
  */
-export const apiMultipartRequest = async (path, auth_token, form) => {
+export const apiMultipartRequest = (path, auth_token, form, onProgress) => {
 	const { addAlert } = alertStore
-
 	const fullpath = `${API_BASE}${path}`
 
-	const headers = new Headers()
-	// headers.append("Content-Type", "multipart/form-data");
-	if (auth_token) {
-		headers.append('Authorization', auth_token)
-	}
+	return new Promise((resolve, reject) => {
+		const xhr = new XMLHttpRequest()
 
-	try {
-		const response = await fetch(fullpath, {
-			method: 'post',
-			body: form,
-			headers,
-		})
+		xhr.open('POST', fullpath)
 
-		if (!response.ok) {
-			throw new Error(await response.text())
+		if (auth_token) {
+			xhr.setRequestHeader('Authorization', auth_token)
 		}
 
-		try {
-			return await response.json()
-		} catch {}
-	} catch (err) {
-		addAlert(err.message, 'error')
+		if (onProgress) {
+			xhr.upload.onprogress = (event) => {
+				if (event.lengthComputable) {
+					const percentComplete = (event.loaded / event.total) * 100
+					onProgress(percentComplete)
+				}
+			}
+		}
 
-		throw err
-	}
+		xhr.onload = () => {
+			if (xhr.status >= 200 && xhr.status < 300) {
+				try {
+					const json = JSON.parse(xhr.responseText)
+					resolve(json)
+				} catch {
+					resolve(xhr.responseText)
+				}
+			} else {
+				const errorMsg = xhr.responseText || 'Upload failed'
+				addAlert(errorMsg, 'error')
+				reject(new Error(errorMsg))
+			}
+		}
+
+		xhr.onerror = () => {
+			addAlert('Network Error', 'error')
+			reject(new Error('Network Error'))
+		}
+
+		xhr.send(form)
+	})
 }
 
 export default apiRequest

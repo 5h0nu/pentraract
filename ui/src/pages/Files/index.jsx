@@ -16,6 +16,8 @@ import Fab from '@suid/material/Fab'
 import ToggleButton from '@suid/material/ToggleButton'
 import ToggleButtonGroup from '@suid/material/ToggleButtonGroup'
 import AddIcon from '@suid/icons-material/Add'
+import LinearProgress from '@suid/material/LinearProgress'
+import Box from '@suid/material/Box'
 
 import API from '../../api'
 import FSListItem from '../../components/FSListItem'
@@ -45,6 +47,11 @@ const Files = () => {
 	 * @type {[import("solid-js").Accessor<import("../api").UserWithAccess[]>, any]}
 	 */
 	const [users, setUsers] = createSignal([])
+
+	// PROGRESS BAR STATE
+	const [uploadProgress, setUploadProgress] = createSignal(0)
+	const [isUploading, setIsUploading] = createSignal(false)
+
 	const navigate = useNavigate()
 	const params = useParams()
 	const basePath = `/storages/${params.id}/files`
@@ -146,9 +153,19 @@ const Files = () => {
 
 		event.target.value = null
 
-		await API.files.uploadFile(params.id, params.path, file)
-		addAlert(`Uploaded file "${file.name}"`, 'success')
-		await fetchFSLayer()
+		try {
+			setIsUploading(true)
+			await API.files.uploadFile(params.id, params.path, file, (progress) => {
+				setUploadProgress(progress)
+			})
+			addAlert(`Uploaded file "${file.name}"`, 'success')
+			await fetchFSLayer()
+		} catch (error) {
+			console.error(error)
+		} finally {
+			setIsUploading(false)
+			setUploadProgress(0)
+		}
 	}
 
 	return (
@@ -241,6 +258,18 @@ const Files = () => {
 					}
 				>
 					<Grid>
+						<Show when={isUploading()}>
+							<Box sx={{ width: '100%', mb: 2 }}>
+								<Typography variant="caption" display="block" gutterBottom>
+									Uploading: {Math.round(uploadProgress())}%
+								</Typography>
+								<LinearProgress
+									variant="determinate"
+									value={uploadProgress()}
+								/>
+							</Box>
+						</Show>
+
 						<Show when={fsLayer().length} fallback={<>Not files yet</>}>
 							<List sx={{ minWidth: 320, maxWidth: 540, mx: 'auto' }}>
 								<Divider />

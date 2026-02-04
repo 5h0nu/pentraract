@@ -125,7 +125,7 @@ const grantAccess = async (storageID, email, accessType) => {
 		`/storages/${storageID}/access`,
 		'post',
 		getAuthToken(),
-		{ user_email: email, access_type: accessType }
+		{ user_email: email, access_type: accessType },
 	)
 }
 
@@ -138,7 +138,7 @@ const listUsersWithAccess = async (storageID) => {
 	return await apiRequest(
 		`/storages/${storageID}/access`,
 		'get',
-		getAuthToken()
+		getAuthToken(),
 	)
 }
 
@@ -153,7 +153,7 @@ const restrictAccess = async (storageID, userID) => {
 		`/storages/${storageID}/access`,
 		'delete',
 		getAuthToken(),
-		{ user_id: userID }
+		{ user_id: userID },
 	)
 }
 
@@ -208,7 +208,7 @@ const createFolder = async (storage_id, path, folderName) => {
 		`/storages/${storage_id}/files/create_folder`,
 		'post',
 		getAuthToken(),
-		{ path, folder_name: folderName }
+		{ path, folder_name: folderName },
 	)
 }
 
@@ -217,9 +217,10 @@ const createFolder = async (storage_id, path, folderName) => {
  * @param {string} storage_id
  * @param {string} path
  * @param {any} file
+ * @param {(progress: number) => void} [onProgress]
  * @returns
  */
-const uploadFile = async (storage_id, path, file) => {
+const uploadFile = async (storage_id, path, file, onProgress) => {
 	const form = new FormData()
 	form.append('file', file)
 	form.append('path', path)
@@ -227,7 +228,8 @@ const uploadFile = async (storage_id, path, file) => {
 	return await apiMultipartRequest(
 		`/storages/${storage_id}/files/upload`,
 		getAuthToken(),
-		form
+		form,
+		onProgress,
 	)
 }
 
@@ -236,9 +238,10 @@ const uploadFile = async (storage_id, path, file) => {
  * @param {string} storage_id
  * @param {string} path
  * @param {any} file
+ * @param {(progress: number) => void} [onProgress]
  * @returns
  */
-const uploadFileTo = async (storage_id, path, file) => {
+const uploadFileTo = async (storage_id, path, file, onProgress) => {
 	const form = new FormData()
 	form.append('file', file)
 	form.append('path', path)
@@ -246,7 +249,8 @@ const uploadFileTo = async (storage_id, path, file) => {
 	return await apiMultipartRequest(
 		`/storages/${storage_id}/files/upload_to`,
 		getAuthToken(),
-		form
+		form,
+		onProgress,
 	)
 }
 
@@ -268,7 +272,7 @@ const getFSLayer = async (storage_id, path) => {
 	return await apiRequest(
 		`/storages/${storage_id}/files/tree/${path}`,
 		'get',
-		getAuthToken()
+		getAuthToken(),
 	)
 }
 
@@ -284,7 +288,7 @@ const download = async (storage_id, path) => {
 		'get',
 		getAuthToken(),
 		undefined,
-		true
+		true,
 	)
 
 	return await response.blob()
@@ -299,7 +303,7 @@ const deleteFile = async (storage_id, path) => {
 	await apiRequest(
 		`/storages/${storage_id}/files/${path}`,
 		'delete',
-		getAuthToken()
+		getAuthToken(),
 	)
 }
 
